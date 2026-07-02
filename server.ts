@@ -9,6 +9,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import multer from 'multer';
 import * as _pdfParse from 'pdf-parse';
 import { Innertube, UniversalCache } from 'youtubei.js';
+import cors from 'cors';
 
 const pdfParse = (_pdfParse as any).default || _pdfParse;
 
@@ -87,6 +88,7 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  app.use(cors());
   app.use(express.json());
 
   // API Routes

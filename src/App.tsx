@@ -54,13 +54,18 @@ function App() {
     setQuizSubmitted({});
     
     try {
-      const response = await fetch('/api/process-video', {
+      const response = await fetch('https://coderecap.onrender.com/api/process-video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: videoUrl })
       });
       
-      const result = await response.json();
+      let result;
+      try {
+        result = await response.json();
+      } catch (e) {
+        throw new Error('Server returned an invalid response (likely an HTML error page). The API might be down.');
+      }
       
       if (!response.ok) {
         throw new Error(result.error || 'Failed to process video');
@@ -90,12 +95,19 @@ function App() {
       setLoading(true);
       setError(null);
       try {
-         const response = await fetch('/api/playlist', {
+         const response = await fetch('https://coderecap.onrender.com/api/playlist', {
            method: 'POST',
            headers: { 'Content-Type': 'application/json' },
            body: JSON.stringify({ url })
          });
-         const result = await response.json();
+         
+         let result;
+         try {
+           result = await response.json();
+         } catch (e) {
+           throw new Error('Server returned an invalid response. The API might be down.');
+         }
+         
          if (!response.ok) throw new Error(result.error);
          
          setPlaylist(result);
@@ -129,11 +141,18 @@ function App() {
        formData.append('pdf', file);
 
        try {
-         const response = await fetch('/api/process-pdf', {
+         const response = await fetch('https://coderecap.onrender.com/api/process-pdf', {
            method: 'POST',
            body: formData
          });
-         const result = await response.json();
+         
+         let result;
+         try {
+           result = await response.json();
+         } catch (e) {
+           throw new Error('Server returned an invalid response. The API might be down.');
+         }
+         
          if (!response.ok) throw new Error(result.error || 'Failed to process PDF');
          setData(result.data);
          setUrl(file.name);
@@ -152,7 +171,7 @@ function App() {
     setChatLoading(true);
 
     try {
-      const response = await fetch('/api/chat', {
+      const response = await fetch('https://coderecap.onrender.com/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -162,7 +181,12 @@ function App() {
         })
       });
       
-      const result = await response.json();
+      let result;
+      try {
+        result = await response.json();
+      } catch (e) {
+        throw new Error('Server returned an invalid response. The API might be down.');
+      }
       
       if (!response.ok) {
         throw new Error(result.error || 'Failed to get chat response');
