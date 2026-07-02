@@ -116,8 +116,9 @@ async function startServer() {
         const transcriptResponse = await YoutubeTranscript.fetchTranscript(videoId);
         transcriptText = (transcriptResponse || []).map(t => t.text).join(' ');
       } catch (err: any) {
-        if (err.message && (err.message.includes('disabled') || err.message.includes('fetch failed') || err.message.includes('No transcript'))) {
-          // Info: Transcript disabled, fallback to oEmbed.
+        const errMsg = err.message || '';
+        if (errMsg.includes('disabled') || errMsg.includes('fetch failed') || errMsg.includes('No transcript') || errMsg.includes('too many requests') || errMsg.includes('captcha')) {
+          // Info: Transcript disabled or IP blocked, fallback to oEmbed.
           try {
              const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`);
              if (oembedRes.ok) {
