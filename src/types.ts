@@ -27,6 +27,8 @@ export interface PracticeProblem {
   statement: string;
   hints: string[];
   solution_approach: string;
+  level?: string;
+  leetcode_similar_problem?: string;
 }
 
 export interface VideoSummaryData {
@@ -39,11 +41,15 @@ export interface VideoSummaryData {
 }
 
 export interface PlaylistItem {
-  id: string;
+  id?: string;
   title: string;
   url: string;
-  thumbnail: string;
+  thumbnail?: string;
   completed?: boolean;
+  text?: string;
+  partIndex?: number;
+  totalParts?: number;
+  chunkIndex?: number;
 }
 
 export interface PlaylistData {

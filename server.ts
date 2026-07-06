@@ -7,11 +7,10 @@ import { createServer as createViteServer } from 'vite';
 import { YoutubeTranscript } from 'youtube-transcript';
 import { GoogleGenAI, Type } from '@google/genai';
 import multer from 'multer';
-import * as _pdfParse from 'pdf-parse';
+import { PDFParse } from 'pdf-parse';
 import { Innertube, UniversalCache } from 'youtubei.js';
 import cors from 'cors';
 
-const pdfParse = (_pdfParse as any).default || _pdfParse;
 
 const upload = multer({ dest: os.tmpdir() });
 const sharedResponseSchema = {
@@ -72,11 +71,13 @@ const sharedResponseSchema = {
         type: Type.OBJECT,
         properties: {
           title: { type: Type.STRING },
+          level: { type: Type.STRING },
           statement: { type: Type.STRING },
           hints: { type: Type.ARRAY, items: { type: Type.STRING } },
-          solution_approach: { type: Type.STRING }
+          solution_approach: { type: Type.STRING },
+          leetcode_similar_problem: { type: Type.STRING }
         },
-        required: ["title", "statement", "hints", "solution_approach"]
+        required: ["title", "level", "statement", "hints", "solution_approach", "leetcode_similar_problem"]
       }
     }
   },
@@ -89,12 +90,58 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
   // API Routes
-  app.post('/api/process-video', async (req, res) => {
+
+  app.post('/api/video-info', async (req, res) => {
     try {
       const { url } = req.body;
+      const videoIdMatch = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11}).*/);
+      const videoId = videoIdMatch ? videoIdMatch[1] : null;
+      if (!videoId) {
+        return res.status(400).json({ error: "Invalid YouTube URL provided." });
+      }
+
+      let videoTitle = 'YouTube Video';
+      let durationMs = 0;
+      try {
+         const yt = await Innertube.create({
+            cache: new UniversalCache(false),
+            generate_session_locally: true
+         });
+         const info = await yt.getBasicInfo(videoId);
+         videoTitle = info.basic_info.title || videoTitle;
+         durationMs = (info.basic_info.duration || 0) * 1000;
+      } catch (err: any) {
+         console.error("Error fetching video info via Innertube:", err.message);
+         // Fallback
+         try {
+            const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`);
+            if (oembedRes.ok) {
+               const oembedData = await oembedRes.json();
+               videoTitle = oembedData.title || videoTitle;
+            }
+         } catch(e) {}
+         
+         try {
+            const transcriptResponse = await YoutubeTranscript.fetchTranscript(videoId);
+            if (transcriptResponse && transcriptResponse.length > 0) {
+               const last = transcriptResponse[transcriptResponse.length - 1];
+               durationMs = last.offset + last.duration;
+            }
+         } catch (e: any) {}
+      }
+
+      res.json({ title: videoTitle, durationMs });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+  app.post('/api/process-video', async (req, res) => {
+    try {
+      const { url, chunkIndex } = req.body;
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) {
         return res.status(500).json({ error: 'GEMINI_API_KEY is not configured on the server.' });
@@ -115,7 +162,13 @@ async function startServer() {
       let videoAuthor = '';
 
       try {
-        const transcriptResponse = await YoutubeTranscript.fetchTranscript(videoId);
+        let transcriptResponse = await YoutubeTranscript.fetchTranscript(videoId);
+        if (chunkIndex !== undefined && chunkIndex !== null) {
+           const CHUNK_DURATION_MS = 60 * 60 * 1000; // 1 hour
+           const startMs = chunkIndex * CHUNK_DURATION_MS;
+           const endMs = (chunkIndex + 1) * CHUNK_DURATION_MS;
+           transcriptResponse = transcriptResponse.filter(t => t.offset >= startMs && t.offset < endMs);
+        }
         transcriptText = (transcriptResponse || []).map(t => t.text).join(' ');
       } catch (err: any) {
         const errMsg = err.message || '';
@@ -143,12 +196,12 @@ async function startServer() {
       CRITICAL INSTRUCTIONS:
       1. You MUST generate your response as valid JSON adhering to the provided schema.
       2. Provide a well-detailed executive summary for this section.
-      3. Provide a thorough chapter breakdown in the sections array.
+      3. Provide a thorough chapter breakdown in the sections array. CRITICAL: Ensure EVERY major topic in the transcript is covered. Do not truncate or omit the final topics (e.g., Recursion, etc.). If you are running out of space, be more concise in your descriptions rather than skipping topics altogether.
       4. Extract important code snippets with explanations.
       5. Provide a solid recap.
       6. Generate useful flashcards.
       7. Generate multiple choice questions for the quiz.
-      8. Generate a practice problem.`;
+      8. Generate MULTIPLE practice problems (at least 2-3 per chapter). Strongly emphasize providing many Advanced and Intermediate problems, not just easy ones. For each problem, specify its difficulty level (e.g., Beginner, Intermediate, Advanced) in the 'level' field. If there is a similar problem on LeetCode, provide its name/link in 'leetcode_similar_problem' (otherwise return an empty string). Do not just rely on the literal text; use your external knowledge to craft high-quality, diverse, and deep practice questions based on the content analyzed.`;
 
       let finalData = {
         executive_summary: "",
@@ -167,9 +220,8 @@ async function startServer() {
         }
         contextText += `\nSince captions are disabled, please use your internal knowledge to summarize this video's topic or the video itself and fulfill the following instructions to the best of your ability:\n\n${instructions}`;
         
-        let currentModel = 'gemini-2.5-flash';
         const response = await ai.models.generateContent({
-          model: currentModel,
+          model: 'gemini-2.5-flash',
           contents: [{ role: 'user', parts: [{ text: contextText }] }],
           config: {
             responseMimeType: 'application/json',
@@ -223,62 +275,16 @@ async function startServer() {
       res.json({ data: finalData, transcript: transcriptText });
 
     } catch (error: any) {
-      let errorMessage = error.message || 'An error occurred during processing.';
-      if (error.status === 503) {
-        errorMessage = 'The AI model is currently experiencing high demand. Please try again in a few moments.';
-        console.error("Error processing video: Model 503 High Demand");
-      } else if (error.status === 429) {
-        console.error("Error processing video: 429 Rate Limit Exceeded. Returning mock data.");
-        return res.json({ 
-          data: {
-            executive_summary: "This is a mock summary provided because the Gemini API rate limit was exceeded. The video covers fundamental programming concepts.",
-            sections: [
-              {
-                chapter_title: "Introduction",
-                detailed_notes: "This section introduces the core concepts of the topic. It covers the basics and sets up the foundation.",
-                code_snippets: [
-                  { language: "javascript", code: "console.log('Hello, world!');", explanation: "A simple hello world example." }
-                ]
-              }
-            ],
-            recap: ["Understood the basics", "Wrote first code"],
-            flashcards: [
-              { front: "What is this?", back: "A mock flashcard." },
-              { front: "Why did you get this?", back: "Because the API rate limit was hit." },
-              { front: "What should you do?", back: "Wait a few minutes or upgrade your quota." }
-            ],
-            quiz: [
-              {
-                question: "Why are you seeing mock data?",
-                options: ["API Rate Limit", "Bug", "Feature", "Magic"],
-                correct_index: 0,
-                explanation: "The API rate limit was exceeded, so mock data is shown."
-              },
-              {
-                question: "Is this the real video summary?",
-                options: ["Yes", "No", "Maybe", "I don't know"],
-                correct_index: 1,
-                explanation: "This is a mock summary."
-              }
-            ],
-            problems: [
-              {
-                title: "Practice Exercise",
-                statement: "Try writing a simple loop.",
-                hints: ["Use a for loop"],
-                solution_approach: "Write a standard for loop iterating from 0 to 10."
-              }
-            ]
-          },
-          transcript: "Mock transcript due to rate limit."
-        });
-      } else {
-        console.error("Error processing video:", error.message);
+      console.error("Error processing video:", error.message);
+      let errMsg = error.message || 'An error occurred during processing.';
+      if (errMsg.includes('429') || errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('rate limit') || errMsg.includes('503')) {
+         errMsg = "Gemini API limit reached. Please wait a few moments and try again.";
       }
-      res.status(error.status || 500).json({ error: errorMessage });
+      res.status(500).json({ error: errMsg });
     }
   });
 
+  
   app.post('/api/process-pdf', upload.single('pdf'), async (req, res) => {
     try {
       if (!req.file) {
@@ -292,8 +298,10 @@ async function startServer() {
 
       const ai = new GoogleGenAI({ apiKey });
       const dataBuffer = fs.readFileSync(req.file.path);
-      const data = await pdfParse(dataBuffer);
-      const pdfText = data.text;
+      const parser = new PDFParse({ data: dataBuffer });
+      const result = await parser.getText();
+      await parser.destroy();
+      const pdfText = result.text;
       fs.unlinkSync(req.file.path); // Clean up
 
       const instructions = `You are an expert technical note-taker specializing in programming and computer science. 
@@ -302,12 +310,12 @@ async function startServer() {
       CRITICAL INSTRUCTIONS:
       1. You MUST generate your response as valid JSON adhering to the provided schema.
       2. Provide a well-detailed executive summary.
-      3. Provide a thorough chapter breakdown in the sections array.
+      3. Provide a thorough chapter breakdown in the sections array. CRITICAL: Ensure EVERY major topic in the transcript is covered. Do not truncate or omit the final topics (e.g., Recursion, etc.). If you are running out of space, be more concise in your descriptions rather than skipping topics altogether.
       4. Extract important code snippets with explanations.
       5. Provide a solid recap.
       6. Generate useful flashcards.
       7. Generate multiple choice questions for the quiz.
-      8. Generate a practice problem.`;
+      8. Generate MULTIPLE practice problems (at least 2-3 per chapter). Strongly emphasize providing many Advanced and Intermediate problems, not just easy ones. For each problem, specify its difficulty level (e.g., Beginner, Intermediate, Advanced) in the 'level' field. If there is a similar problem on LeetCode, provide its name/link in 'leetcode_similar_problem' (otherwise return an empty string). Do not just rely on the literal text; use your external knowledge to craft high-quality, diverse, and deep practice questions based on the content analyzed.`;
 
       console.log(`Generating summary for PDF with Gemini...`);
       const response = await ai.models.generateContent({
@@ -340,33 +348,15 @@ async function startServer() {
       res.json({ data: generatedData, transcript: pdfText });
 
     } catch (error: any) {
-      if (error.status === 429) {
-        console.error("Error processing PDF: 429 Rate Limit Exceeded. Returning mock data.");
-        return res.json({ 
-          data: {
-            executive_summary: "This is a mock summary provided because the Gemini API rate limit was exceeded. The document covers important concepts.",
-            sections: [
-              {
-                chapter_title: "Document Introduction",
-                detailed_notes: "This section introduces the core concepts of the document.",
-                code_snippets: []
-              }
-            ],
-            recap: ["Reviewed document concepts"],
-            flashcards: [
-              { front: "Why are you seeing mock data?", back: "Because the API rate limit was hit." }
-            ],
-            quiz: [],
-            problems: []
-          },
-          transcript: "Mock transcript due to rate limit."
-        });
-      } else {
-        console.error("Error processing PDF:", error.message);
-        res.status(500).json({ error: error.message || 'An error occurred during PDF processing.' });
+      console.error("Error processing PDF:", error.message);
+      let errMsg = error.message || 'An error occurred during PDF processing.';
+      if (errMsg.includes('429') || errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('rate limit')) {
+         errMsg = "AI API limit reached. Please wait a few moments and try again.";
       }
+      res.status(500).json({ error: errMsg });
     }
   });
+
 
   app.post('/api/playlist', async (req, res) => {
     try {
@@ -440,12 +430,17 @@ async function startServer() {
 
       res.json({ reply: response.text });
     } catch (error: any) {
-      if (error.status === 429) {
-        console.error("Error in chat: 429 Rate Limit Exceeded.");
+      if (error.status === 503 || error.status === 429 || (error.message && (error.message.includes('503') || error.message.includes('429') || error.message.includes('high demand')))) {
+        console.warn("Notice (Chat): 503/429 High Demand or Rate Limit.");
         return res.json({ reply: "I'm currently experiencing high traffic and hit my rate limit. Please try again in a few moments!" });
+      } else {
+        console.error("Error in chat:", error.message);
+        let errMsg = error.message || 'Failed to get chat response.';
+        if (errMsg.includes('429') || errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('rate limit')) {
+           errMsg = "AI API limit reached. Please wait a few moments and try again.";
+        }
+        res.status(500).json({ error: errMsg });
       }
-      console.error("Error in chat:", error.message);
-      res.status(500).json({ error: error.message || 'Failed to get chat response.' });
     }
   });
 
@@ -463,6 +458,12 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+
+  app.use((err, req, res, next) => {
+    console.error('Unhandled Error:', err);
+    res.status(500).json({ error: err.message || 'An unexpected server error occurred.' });
+  });
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
