@@ -1,4 +1,4 @@
-package com.coderecap.app;
+package com.coderecap.com;
 
 import com.getcapacitor.BridgeActivity;
 

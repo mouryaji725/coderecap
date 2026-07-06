@@ -88,8 +88,8 @@ function App() {
     setQuizSubmitted({});
     
     try {
-      const response = await fetch('https://coderecap.onrender.com/api/process-video', { 
-        method: 'POST',
+      const response = await fetch('/api/process-video', {
+          method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: videoUrl, chunkIndex })
       });

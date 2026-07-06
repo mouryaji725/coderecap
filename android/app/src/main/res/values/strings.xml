@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">CodeRecap</string>
-    <string name="title_activity_main">CodeRecap</string>
-    <string name="package_name">com.coderecap.app</string>
-    <string name="custom_url_scheme">com.coderecap.app</string>
+    <string name="app_name">codeRecap</string>
+    <string name="title_activity_main">codeRecap</string>
+    <string name="package_name">com.coderecap.com</string>
+    <string name="custom_url_scheme">com.coderecap.com</string>
 </resources>
